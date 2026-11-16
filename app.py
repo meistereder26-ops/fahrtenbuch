@@ -1,4 +1,4 @@
- Write(app.py)
+
   ⎿  Added 23 lines, removed 16 lines
       52  if menu == "➕ Neue Fahrt erfassen":
       53      st.header("Neue Fahrt eintragen")

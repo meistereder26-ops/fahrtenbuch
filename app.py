@@ -8,17 +8,25 @@ st.set_page_config(page_title="Fahrtenbuch", page_icon="🚗", layout="centered"
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1_Yinpa19hnDXZcHnlx3pR_N2HKKZlkQvitakKlq2dXA/edit?gid=0#gid=0"
-SPALTEN = [
-    "Datum", "Startzeit", "Endzeit", "Startort", "Zielort",
-    "KM_Start", "KM_Ende", "Gefahrene_KM", "Zweck", "Kategorie"
-]
+TEXT_SPALTEN = ["Datum", "Startzeit", "Endzeit", "Startort", "Zielort", "Zweck", "Kategorie"]
+ZAHL_SPALTEN = ["KM_Start", "KM_Ende", "Gefahrene_KM"]
+SPALTEN = ["Datum", "Startzeit", "Endzeit", "Startort", "Zielort", "KM_Start", "KM_Ende", "Gefahrene_KM", "Zweck", "Kategorie"]
 
 def lade_daten():
     try:
         df = conn.read(spreadsheet=SHEET_URL, worksheet="Tabellenblatt1", ttl=0)
         if df.empty or "Datum" not in df.columns:
-            return pd.DataFrame(columns=SPALTEN)
-        return df.dropna(how="all")
+            df = pd.DataFrame(columns=SPALTEN)
+        else:
+            df = df.dropna(how="all")
+            for col in SPALTEN:
+                if col not in df.columns:
+                    df[col] = None
+        for col in TEXT_SPALTEN:
+            df[col] = df[col].astype("object")
+        for col in ZAHL_SPALTEN:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df[SPALTEN]
     except Exception as e:
         st.error(f"Lesefehler: {e}")
         return pd.DataFrame(columns=SPALTEN)
@@ -30,7 +38,7 @@ df = lade_daten()
 
 if menu == "🚀 Fahrt erfassen":
     fahrt_laeuft = False
-    if not df.empty and pd.isna(df.iloc[-1]["Endzeit"]):
+    if not df.empty and (pd.isna(df.iloc[-1]["Endzeit"]) or str(df.iloc[-1]["Endzeit"]).strip() == ""):
         fahrt_laeuft = True
         aktuelle_fahrt = df.iloc[-1]
 
@@ -50,9 +58,9 @@ if menu == "🚀 Fahrt erfassen":
                 "Datum": date.today().strftime("%Y-%m-%d"),
                 "Startzeit": datetime.now().strftime("%H:%M"),
                 "Endzeit": None,
-                "Startort": start_ort,
+                "Startort": str(start_ort),
                 "Zielort": "",
-                "KM_Start": km_start,
+                "KM_Start": float(km_start),
                 "KM_Ende": None,
                 "Gefahrene_KM": None,
                 "Zweck": "",
@@ -92,11 +100,11 @@ if menu == "🚀 Fahrt erfassen":
 
             idx = df.index[-1]
             df.at[idx, "Endzeit"] = datetime.now().strftime("%H:%M")
-            df.at[idx, "Zielort"] = ziel_ort
-            df.at[idx, "KM_Ende"] = km_ende
-            df.at[idx, "Gefahrene_KM"] = gefahrene_km
-            df.at[idx, "Zweck"] = zweck_komplett
-            df.at[idx, "Kategorie"] = kategorie
+            df.at[idx, "Zielort"] = str(ziel_ort)
+            df.at[idx, "KM_Ende"] = float(km_ende)
+            df.at[idx, "Gefahrene_KM"] = float(gefahrene_km)
+            df.at[idx, "Zweck"] = str(zweck_komplett)
+            df.at[idx, "Kategorie"] = str(kategorie)
 
             try:
                 conn.update(spreadsheet=SHEET_URL, worksheet="Tabellenblatt1", data=df)

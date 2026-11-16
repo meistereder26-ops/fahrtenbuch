@@ -10,9 +10,12 @@ st.set_page_config(page_title="Fahrtenbuch", page_icon="🚗", layout="centered"
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1_Yinpa19hnDXZcHnlx3pR_N2HKKZlkQvitakKlq2dXA/edit?gid=0#gid=0"
-TEXT_SPALTEN = ["Datum", "Startzeit", "Endzeit", "Startort", "Zielort", "Zweck", "Kategorie"]
+TEXT_SPALTEN = ["Datum", "Startzeit", "Endzeit", "Startort", "Zielort", "Zweck", "Kategorie", "Start_GPS"]
 ZAHL_SPALTEN = ["KM_Start", "KM_Ende", "Gefahrene_KM"]
-SPALTEN = ["Datum", "Startzeit", "Endzeit", "Startort", "Zielort", "KM_Start", "KM_Ende", "Gefahrene_KM", "Zweck", "Kategorie"]
+SPALTEN = [
+    "Datum", "Startzeit", "Endzeit", "Startort", "Zielort",
+    "KM_Start", "KM_Ende", "Gefahrene_KM", "Zweck", "Kategorie", "Start_GPS"
+]
 
 def adresse_aus_gps(lat, lon):
     try:
@@ -33,6 +36,19 @@ def adresse_aus_gps(lat, lon):
     except Exception:
         pass
     return f"GPS: {lat:.5f}, {lon:.5f}"
+
+def berechne_strassen_km(lat1, lon1, lat2, lon2):
+    try:
+        url = f"https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=false"
+        res = requests.get(url, timeout=6)
+        if res.status_code == 200:
+            daten = res.json()
+            if daten.get("routes"):
+                meter = daten["routes"][0]["distance"]
+                return round(meter / 1000.0, 1)
+    except Exception:
+        pass
+    return None
 
 def lade_daten():
     try:
@@ -74,10 +90,12 @@ if menu == "🚀 Fahrt erfassen":
 
         if "start_ort_text" not in st.session_state:
             st.session_state["start_ort_text"] = "Büro / Homeoffice"
+        if "start_gps_coords" not in st.session_state:
+            st.session_state["start_gps_coords"] = ""
         if "gps_start_aktiv" not in st.session_state:
             st.session_state["gps_start_aktiv"] = False
 
-        if st.button("📍 Aktuellen GPS-Standort abrufen", use_container_width=True):
+        if st.button("📍 GPS-Startort ermitteln", use_container_width=True):
             st.session_state["gps_start_aktiv"] = True
 
         if st.session_state["gps_start_aktiv"]:
@@ -86,10 +104,11 @@ if menu == "🚀 Fahrt erfassen":
                 lat = loc["coords"]["latitude"]
                 lon = loc["coords"]["longitude"]
                 st.session_state["start_ort_text"] = adresse_aus_gps(lat, lon)
+                st.session_state["start_gps_coords"] = f"{lat},{lon}"
                 st.session_state["gps_start_aktiv"] = False
                 st.rerun()
             else:
-                st.info("Standort wird ermittelt... Bitte ggf. im Browser erlauben.")
+                st.info("Start-Standort wird ermittelt... Bitte ggf. im Browser erlauben.")
 
         start_ort = st.text_input("Startort", key="start_ort_text")
         km_start = st.number_input("Tachostand Start (km):", min_value=0.0, step=1.0, value=letzter_km)
@@ -105,48 +124,76 @@ if menu == "🚀 Fahrt erfassen":
                 "KM_Ende": None,
                 "Gefahrene_KM": None,
                 "Zweck": "",
-                "Kategorie": "Dienstlich"
+                "Kategorie": "Dienstlich",
+                "Start_GPS": st.session_state.get("start_gps_coords", "")
             }])
             df_neu = pd.concat([df, neue_zeile], ignore_index=True)
             try:
                 conn.update(spreadsheet=SHEET_URL, worksheet="Tabellenblatt1", data=df_neu)
+                st.session_state["start_gps_coords"] = ""
                 st.session_state["gps_start_aktiv"] = False
                 st.rerun()
             except Exception as e:
                 st.error(f"Schreibfehler: {e}")
 
     else:
+        km_start_val = float(aktuelle_fahrt["KM_Start"])
         st.warning(
             f"Fahrt läuft seit **{aktuelle_fahrt['Startzeit']}** ab **{aktuelle_fahrt['Startort']}** "
-            f"(Start: {aktuelle_fahrt['KM_Start']} km)"
+            f"(Start: {km_start_val} km)"
         )
 
         if "ziel_ort_text" not in st.session_state:
             st.session_state["ziel_ort_text"] = ""
         if "gps_ziel_aktiv" not in st.session_state:
             st.session_state["gps_ziel_aktiv"] = False
+        if "gps_berechnete_km" not in st.session_state:
+            st.session_state["gps_berechnete_km"] = None
 
-        if st.button("📍 Zielort per GPS ermitteln", use_container_width=True):
+        if st.button("📍 GPS-Zielort & Strecke berechnen", use_container_width=True):
             st.session_state["gps_ziel_aktiv"] = True
 
         if st.session_state["gps_ziel_aktiv"]:
             loc = get_geolocation(component_key="gps_ziel")
             if loc and "coords" in loc:
-                lat = loc["coords"]["latitude"]
-                lon = loc["coords"]["longitude"]
-                st.session_state["ziel_ort_text"] = adresse_aus_gps(lat, lon)
+                lat2 = loc["coords"]["latitude"]
+                lon2 = loc["coords"]["longitude"]
+                st.session_state["ziel_ort_text"] = adresse_aus_gps(lat2, lon2)
+
+                start_gps_str = str(aktuelle_fahrt.get("Start_GPS", ""))
+                if "," in start_gps_str and start_gps_str != "nan":
+                    try:
+                        lat1, lon1 = map(float, start_gps_str.split(","))
+                        strecke_km = berechne_strassen_km(lat1, lon1, lat2, lon2)
+                        if strecke_km is not None:
+                            st.session_state["gps_berechnete_km"] = strecke_km
+                            st.session_state["km_ende_input"] = round(km_start_val + strecke_km, 1)
+                    except Exception:
+                        pass
+
                 st.session_state["gps_ziel_aktiv"] = False
                 st.rerun()
             else:
-                st.info("Zielort wird ermittelt... Bitte ggf. im Browser erlauben.")
+                st.info("Zielort & Straßenstrecke werden ermittelt...")
+
+        if st.session_state["gps_berechnete_km"] is not None:
+            st.success(f"🛣️ Ermittelte GPS-Fahrstrecke: **{st.session_state['gps_berechnete_km']} km** (automatisch auf Start-Tacho addiert)")
 
         ziel_ort = st.text_input("Zielort / Kunde", key="ziel_ort_text", placeholder="z.B. Musterfirma GmbH")
+
+        if "km_ende_input" not in st.session_state or st.session_state["km_ende_input"] <= km_start_val:
+            st.session_state["km_ende_input"] = km_start_val
+
         km_ende = st.number_input(
             "Tachostand Ankunft (km):",
-            min_value=float(aktuelle_fahrt["KM_Start"]) + 0.1,
-            step=1.0,
-            value=float(aktuelle_fahrt["KM_Start"]) + 10.0
+            min_value=km_start_val,
+            step=0.5,
+            key="km_ende_input"
         )
+
+        gefahrene_vorschau = round(km_ende - km_start_val, 1)
+        st.caption(f"Gefahrene Strecke für diese Fahrt: **{gefahrene_vorschau} km**")
+
         kategorie = st.selectbox("Kategorie", ["Dienstlich", "Privat", "Arbeitsweg"])
         zweck = st.selectbox(
             "Zweck",
@@ -155,7 +202,6 @@ if menu == "🚀 Fahrt erfassen":
         notiz = st.text_input("Bemerkung (optional)")
 
         if st.button("🏁 Fahrt Stoppen & Speichern", type="primary", use_container_width=True):
-            km_start_val = float(aktuelle_fahrt["KM_Start"])
             gefahrene_km = round(km_ende - km_start_val, 1)
             zweck_komplett = f"{zweck} ({notiz})" if notiz else zweck
 
@@ -171,6 +217,9 @@ if menu == "🚀 Fahrt erfassen":
                 conn.update(spreadsheet=SHEET_URL, worksheet="Tabellenblatt1", data=df)
                 st.session_state["ziel_ort_text"] = ""
                 st.session_state["gps_ziel_aktiv"] = False
+                st.session_state["gps_berechnete_km"] = None
+                if "km_ende_input" in st.session_state:
+                    del st.session_state["km_ende_input"]
                 st.success(f"Fahrt gespeichert! ({gefahrene_km} km)")
                 st.rerun()
             except Exception as e:
@@ -184,9 +233,10 @@ elif menu == "📋 Übersicht & Export":
         dienst_km = abgeschlossene[abgeschlossene["Kategorie"] == "Dienstlich"]["Gefahrene_KM"].sum()
         col2.metric("Davon Dienstlich", f"{dienst_km:.1f} km")
 
-        st.dataframe(df, use_container_width=True)
+        anzeige_spalten = [c for c in df.columns if c != "Start_GPS"]
+        st.dataframe(df[anzeige_spalten], use_container_width=True)
 
-        csv_export = df.to_csv(index=False, sep=";").encode("utf-8-sig")
+        csv_export = df[anzeige_spalten].to_csv(index=False, sep=";").encode("utf-8-sig")
         st.download_button(
             "📥 Export als CSV",
             csv_export,

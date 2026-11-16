@@ -1,5 +1,7 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
+from streamlit_js_eval import get_geolocation
+import requests
 import pandas as pd
 from datetime import datetime, date
 
@@ -11,6 +13,26 @@ SHEET_URL = "https://docs.google.com/spreadsheets/d/1_Yinpa19hnDXZcHnlx3pR_N2HKK
 TEXT_SPALTEN = ["Datum", "Startzeit", "Endzeit", "Startort", "Zielort", "Zweck", "Kategorie"]
 ZAHL_SPALTEN = ["KM_Start", "KM_Ende", "Gefahrene_KM"]
 SPALTEN = ["Datum", "Startzeit", "Endzeit", "Startort", "Zielort", "KM_Start", "KM_Ende", "Gefahrene_KM", "Zweck", "Kategorie"]
+
+def adresse_aus_gps(lat, lon):
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
+        headers = {"User-Agent": "FahrtenbuchStreamlitApp/1.0"}
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            addr = res.json().get("address", {})
+            strasse = addr.get("road", "")
+            hausnr = addr.get("house_number", "")
+            plz = addr.get("postcode", "")
+            ort = addr.get("city") or addr.get("town") or addr.get("village") or ""
+            strasse_komplett = f"{strasse} {hausnr}".strip()
+            ort_komplett = f"{plz} {ort}".strip()
+            teile = [t for t in [strasse_komplett, ort_komplett] if t]
+            if teile:
+                return ", ".join(teile)
+    except Exception:
+        pass
+    return f"GPS: {lat:.5f}, {lon:.5f}"
 
 def lade_daten():
     try:
@@ -50,7 +72,26 @@ if menu == "🚀 Fahrt erfassen":
             else 0.0
         )
 
-        start_ort = st.text_input("Startort", value="Büro / Homeoffice")
+        if "start_ort_text" not in st.session_state:
+            st.session_state["start_ort_text"] = "Büro / Homeoffice"
+        if "gps_start_aktiv" not in st.session_state:
+            st.session_state["gps_start_aktiv"] = False
+
+        if st.button("📍 Aktuellen GPS-Standort abrufen", use_container_width=True):
+            st.session_state["gps_start_aktiv"] = True
+
+        if st.session_state["gps_start_aktiv"]:
+            loc = get_geolocation(component_key="gps_start")
+            if loc and "coords" in loc:
+                lat = loc["coords"]["latitude"]
+                lon = loc["coords"]["longitude"]
+                st.session_state["start_ort_text"] = adresse_aus_gps(lat, lon)
+                st.session_state["gps_start_aktiv"] = False
+                st.rerun()
+            else:
+                st.info("Standort wird ermittelt... Bitte ggf. im Browser erlauben.")
+
+        start_ort = st.text_input("Startort", key="start_ort_text")
         km_start = st.number_input("Tachostand Start (km):", min_value=0.0, step=1.0, value=letzter_km)
 
         if st.button("🚩 Fahrt Starten", type="primary", use_container_width=True):
@@ -69,6 +110,7 @@ if menu == "🚀 Fahrt erfassen":
             df_neu = pd.concat([df, neue_zeile], ignore_index=True)
             try:
                 conn.update(spreadsheet=SHEET_URL, worksheet="Tabellenblatt1", data=df_neu)
+                st.session_state["gps_start_aktiv"] = False
                 st.rerun()
             except Exception as e:
                 st.error(f"Schreibfehler: {e}")
@@ -79,7 +121,26 @@ if menu == "🚀 Fahrt erfassen":
             f"(Start: {aktuelle_fahrt['KM_Start']} km)"
         )
 
-        ziel_ort = st.text_input("Zielort / Kunde", placeholder="z.B. Musterfirma GmbH")
+        if "ziel_ort_text" not in st.session_state:
+            st.session_state["ziel_ort_text"] = ""
+        if "gps_ziel_aktiv" not in st.session_state:
+            st.session_state["gps_ziel_aktiv"] = False
+
+        if st.button("📍 Zielort per GPS ermitteln", use_container_width=True):
+            st.session_state["gps_ziel_aktiv"] = True
+
+        if st.session_state["gps_ziel_aktiv"]:
+            loc = get_geolocation(component_key="gps_ziel")
+            if loc and "coords" in loc:
+                lat = loc["coords"]["latitude"]
+                lon = loc["coords"]["longitude"]
+                st.session_state["ziel_ort_text"] = adresse_aus_gps(lat, lon)
+                st.session_state["gps_ziel_aktiv"] = False
+                st.rerun()
+            else:
+                st.info("Zielort wird ermittelt... Bitte ggf. im Browser erlauben.")
+
+        ziel_ort = st.text_input("Zielort / Kunde", key="ziel_ort_text", placeholder="z.B. Musterfirma GmbH")
         km_ende = st.number_input(
             "Tachostand Ankunft (km):",
             min_value=float(aktuelle_fahrt["KM_Start"]) + 0.1,
@@ -108,6 +169,8 @@ if menu == "🚀 Fahrt erfassen":
 
             try:
                 conn.update(spreadsheet=SHEET_URL, worksheet="Tabellenblatt1", data=df)
+                st.session_state["ziel_ort_text"] = ""
+                st.session_state["gps_ziel_aktiv"] = False
                 st.success(f"Fahrt gespeichert! ({gefahrene_km} km)")
                 st.rerun()
             except Exception as e:

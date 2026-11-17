@@ -17,6 +17,15 @@ SPALTEN = [
     "KM_Start", "KM_Ende", "Gefahrene_KM", "Zweck", "Kategorie", "Start_GPS"
 ]
 
+# Sauberes Zurücksetzen der Felder VOR dem Rendern der Widgets
+if st.session_state.get("reset_form", False):
+    for key in ["ziel_ort_text", "km_ende_input", "gps_berechnete_km", "start_gps_coords"]:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.session_state["gps_start_aktiv"] = False
+    st.session_state["gps_ziel_aktiv"] = False
+    st.session_state["reset_form"] = False
+
 def adresse_aus_gps(lat, lon):
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
@@ -130,8 +139,7 @@ if menu == "🚀 Fahrt erfassen":
             df_neu = pd.concat([df, neue_zeile], ignore_index=True)
             try:
                 conn.update(spreadsheet=SHEET_URL, worksheet="Tabellenblatt1", data=df_neu)
-                st.session_state["start_gps_coords"] = ""
-                st.session_state["gps_start_aktiv"] = False
+                st.session_state["reset_form"] = True
                 st.rerun()
             except Exception as e:
                 st.error(f"Schreibfehler: {e}")
@@ -181,7 +189,7 @@ if menu == "🚀 Fahrt erfassen":
 
         ziel_ort = st.text_input("Zielort / Kunde", key="ziel_ort_text", placeholder="z.B. Musterfirma GmbH")
 
-        if "km_ende_input" not in st.session_state or st.session_state["km_ende_input"] <= km_start_val:
+        if "km_ende_input" not in st.session_state or st.session_state["km_ende_input"] < km_start_val:
             st.session_state["km_ende_input"] = km_start_val
 
         km_ende = st.number_input(
@@ -215,12 +223,7 @@ if menu == "🚀 Fahrt erfassen":
 
             try:
                 conn.update(spreadsheet=SHEET_URL, worksheet="Tabellenblatt1", data=df)
-                st.session_state["ziel_ort_text"] = ""
-                st.session_state["gps_ziel_aktiv"] = False
-                st.session_state["gps_berechnete_km"] = None
-                if "km_ende_input" in st.session_state:
-                    del st.session_state["km_ende_input"]
-                st.success(f"Fahrt gespeichert! ({gefahrene_km} km)")
+                st.session_state["reset_form"] = True
                 st.rerun()
             except Exception as e:
                 st.error(f"Schreibfehler: {e}")
